@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FilterLine Field — voice-first filter ordering (mock)</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main class="layout">
+
+  <section class="explainer">
+    <p class="kicker">FilterLine Field · Mock build</p>
+    <h1>The tech talks.<br>The filters show up.</h1>
+    <p class="lede">A large HVAC company's techs run this app in the field. It opens already
+    knowing who they are — company account, crew, van, order limit — so there is no login
+    friction at the top of a ladder. The whole flow is built for busy hands: speak the order,
+    tap one big card for the job site, hear the total read back, and confirm the delivery
+    with the code from a text message. Nothing in the flow requires typing.</p>
+    <ol class="steps">
+      <li><strong>Say it.</strong> “Two cases of 20 by 25 by 1, MERV 8 — and one case of 16 by 20 by 4, MERV 13.” The app transcribes it, parses it into order lines, and checks stock at both distribution centers.</li>
+      <li><strong>Point at the job.</strong> Job-site delivery, specifically: saved site cards, a delivery window, spoken drop-off notes.</li>
+      <li><strong>Hear it back.</strong> The review screen reads the order and the full estimated cost out loud — items, delivery, tax — before anything is committed.</li>
+      <li><strong>Lock it by text.</strong> Placing the order sends a text with the ETA, the total, and a 6-digit code. The code goes in on a glove-sized keypad and the delivery is locked.</li>
+    </ol>
+    <p class="fineprint">Demo data only. Every person, company, site, price, and stock count on
+    this page is invented, and no order goes anywhere. Where the browser supports it, the mic
+    button uses real speech recognition and the read-back uses real speech synthesis; otherwise
+    the mock speaks a sample order so the flow can still be walked end to end.</p>
+  </section>
+
+  <section class="phone-wrap">
+    <div class="phone">
+      <div class="notch"></div>
+
+      <!-- Screen: Home / speak the order -->
+      <div class="screen active" id="screen-home">
+        <header class="idbar">
+          <div class="avatar">DR</div>
+          <div class="idtext">
+            <p class="idname">Dale R.</p>
+            <p class="idsub">Summit Air Mechanical · Crew 7 · Van 214</p>
+          </div>
+          <span class="badge">Signed in</span>
+        </header>
+        <p class="acct">Account limit $750 per order · this device is trusted</p>
+
+        <h2 class="prompt">What do you need?</h2>
+        <button class="mic" id="micBtn" aria-label="Speak your order">
+          <span class="mic-icon">🎙</span>
+          <span class="mic-label" id="micLabel">Tap and talk</span>
+        </button>
+        <p class="heard" id="heardText">Try: “Two cases of 20 by 25 by 1 MERV 8, and one case of 16 by 20 by 4 MERV 13.”</p>
+
+        <div id="cartArea" class="hidden">
+          <h3 class="section-title">Your order</h3>
+          <div id="cartLines"></div>
+          <p class="stocknote" id="stockNote"></p>
+          <button class="cta" id="toSiteBtn">Deliver to a job site →</button>
+        </div>
+      </div>
+
+      <!-- Screen: Job site -->
+      <div class="screen" id="screen-site">
+        <button class="back" data-back="screen-home">← Order</button>
+        <h2 class="prompt">Where's it going?</h2>
+        <div id="siteCards"></div>
+        <h3 class="section-title">When?</h3>
+        <div id="windowCards"></div>
+        <h3 class="section-title">Drop-off note</h3>
+        <button class="notebtn" id="noteBtn">🎙 <span id="noteLabel">Tap to speak a note</span></button>
+        <p class="heard" id="noteHeard"></p>
+        <button class="cta" id="toReviewBtn">Review the order →</button>
+      </div>
+
+      <!-- Screen: Review -->
+      <div class="screen" id="screen-review">
+        <button class="back" data-back="screen-site">← Job site</button>
+        <h2 class="prompt">Sound right?</h2>
+        <button class="notebtn" id="readBackBtn">🔊 Read it back to me</button>
+        <div id="reviewBody"></div>
+        <button class="cta" id="placeBtn">Place the order</button>
+        <p class="fineprint center">Placing sends a text to Dale's phone with the ETA, the total, and a verification code.</p>
+      </div>
+
+      <!-- Screen: Verify by text -->
+      <div class="screen" id="screen-verify">
+        <h2 class="prompt">Check your texts</h2>
+        <div class="sms">
+          <p class="sms-from">FilterLine · just now</p>
+          <p class="sms-body" id="smsBody"></p>
+        </div>
+        <p class="codelabel">Enter the 6-digit code</p>
+        <div class="codedots" id="codeDots"></div>
+        <p class="codeerror" id="codeError"></p>
+        <div class="keypad" id="keypad"></div>
+      </div>
+
+      <!-- Screen: Done -->
+      <div class="screen" id="screen-done">
+        <div class="check">✓</div>
+        <h2 class="prompt center">Delivery locked in</h2>
+        <p class="center" id="doneLine"></p>
+        <div class="timeline" id="timeline"></div>
+        <button class="cta" id="againBtn">Start a new order</button>
+      </div>
+
+    </div>
+    <p class="under-phone">FilterLine Field — mock. No real orders, no real texts.</p>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
