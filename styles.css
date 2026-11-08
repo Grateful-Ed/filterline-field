@@ -122,3 +122,8 @@ body{background:var(--bg); color:var(--text);
   padding:16px; margin-bottom:14px;}
 .vpanel .cta{margin-top:12px;}
 .vpanel button[disabled]{opacity:.6;}
+.ding{background:var(--accent); color:#fff; font-weight:800; font-size:15.5px;
+  border-radius:var(--radius); padding:13px 16px; margin-bottom:10px;}
+.fakecta{display:inline-block; background:var(--accent2); color:#fff; font-weight:700;
+  font-size:15px; padding:12px 18px; border-radius:var(--radius); margin:12px 8px 2px 0; opacity:.85;}
+.fakecta.alt{background:var(--panel); color:var(--muted); border:1px solid var(--line);}
