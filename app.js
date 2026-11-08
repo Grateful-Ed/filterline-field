@@ -124,7 +124,8 @@ function changeQty(sku, d) {
 }
 
 function hearOrder(text) {
-  $("heardText").textContent = "Heard: “" + text + "”";
+  $("heardText").textContent = voiceNote + "Heard: “" + text + "”";
+  voiceNote = "";
   const lines = parseOrder(text);
   if (!lines.length) {
     speak("I heard you, but I could not match that to a filter. Try the size and MERV rating, like 20 by 25 by 1, MERV 8.");
@@ -142,25 +143,40 @@ function hearOrder(text) {
 // ---------------- Voice in ----------------
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
 let recog = null;
+let voiceNote = ""; // set when the demo voice stands in for a failed live mic
+
+function simulate(onText, btn, label) {
+  const line = SIM_LINES[simStep % SIM_LINES.length]; simStep++;
+  label.textContent = "Listening… (demo voice)";
+  btn.classList.add("listening");
+  setTimeout(() => { btn.classList.remove("listening"); label.textContent = "Tap and talk"; onText(line); }, 900);
+}
 
 function listen(onText, btn, label) {
-  if (!SR) { // simulated voice: walk the sample lines
-    const line = SIM_LINES[simStep % SIM_LINES.length]; simStep++;
-    label.textContent = "Listening… (simulated)";
-    btn.classList.add("listening");
-    setTimeout(() => { btn.classList.remove("listening"); label.textContent = "Tap and talk"; onText(line); }, 900);
+  if (!SR) { // browser has no speech recognition at all (Firefox) — demo voice stands in
+    voiceNote = "This browser has no live speech recognition, so the demo voice is standing in. ";
+    simulate(onText, btn, label);
     return;
   }
-  if (recog) { recog.stop(); }
-  recog = new SR();
-  recog.lang = "en-US";
-  recog.interimResults = false;
-  recog.onresult = (e) => onText(e.results[0][0].transcript);
-  recog.onend = () => { btn.classList.remove("listening"); label.textContent = "Tap and talk"; };
-  recog.onerror = recog.onend;
-  btn.classList.add("listening");
-  label.textContent = "Listening… talk now";
-  recog.start();
+  if (recog) { try { recog.stop(); } catch (e) { /* already stopped */ } }
+  let settled = false;
+  const fallback = () => {
+    if (settled) return; settled = true;
+    btn.classList.remove("listening"); label.textContent = "Tap and talk";
+    voiceNote = "The live mic didn't come through in this browser, so the demo voice is standing in. ";
+    simulate(onText, btn, label);
+  };
+  try {
+    recog = new SR();
+    recog.lang = "en-US";
+    recog.interimResults = false;
+    recog.onresult = (e) => { settled = true; onText(e.results[0][0].transcript); };
+    recog.onerror = fallback; // Safari permission/service failures land here
+    recog.onend = () => { btn.classList.remove("listening"); label.textContent = "Tap and talk"; if (!settled) fallback(); };
+    btn.classList.add("listening");
+    label.textContent = "Listening… talk now";
+    recog.start();
+  } catch (e) { fallback(); }
 }
 
 // ---------------- Sites & windows ----------------
@@ -269,4 +285,7 @@ document.querySelectorAll("[data-back]").forEach((b) => b.addEventListener("clic
 $("keypad").innerHTML = ["1","2","3","4","5","6","7","8","9","clr","0","del"]
   .map((k) => '<button data-key="' + k + '">' + (k === "clr" ? "C" : k === "del" ? "⌫" : k) + "</button>").join("");
 document.querySelectorAll("[data-key]").forEach((b) => b.addEventListener("click", () => keyPress(b.dataset.key)));
+if ($("voiceMode")) $("voiceMode").textContent = SR
+  ? "Live mic is available in this browser — tap and talk for real."
+  : "This browser can't do live speech (Firefox has none; Safari's often fails silently) — the demo voice stands in so the flow still runs. Chrome does live speech.";
 renderCart();
