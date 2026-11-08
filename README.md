@@ -39,11 +39,16 @@ Or just open `index.html` in a browser.
 
 ## Voice behavior
 
-- Where the browser supports the Web Speech API (Chrome does), the mic button
-  uses real speech recognition and the read-back uses real speech synthesis.
-- Where it doesn't, the mic speaks sample order lines so the whole flow can
-  still be walked end to end, and the spoken-order parser (`parseOrder` in
-  `app.js`) runs for real on whatever was "heard."
+- Live speech recognition on the web is effectively a Chrome feature.
+  Firefox ships without the Speech Recognition API at all, and Safari's
+  implementation exists but often fails silently (permissions, service errors).
+- Where recognition works (Chrome), the mic button uses it for real, and the
+  read-back uses real speech synthesis.
+- Where it doesn't — or where a live attempt errors out — the app says so on
+  screen and the demo voice speaks a sample order instead, so the whole flow
+  can still be walked end to end. A mic failure never dead-ends the order.
+- The spoken-order parser (`parseOrder` in `app.js`) runs for real on
+  whatever was "heard," live or demo.
 
 ## Design notes
 
