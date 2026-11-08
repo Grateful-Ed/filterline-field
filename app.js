@@ -269,27 +269,26 @@ function renderOffers() {
     : "";
 }
 
-// ---------------- Vendor's side ----------------
+// ---------------- Vendor's side (visual explainer — deliberately not interactive) ----------------
 function renderVendorView() {
   const v1 = findVendor("volunteer"), v2 = findVendor("musiccity");
   const linesHtml = state.cart.map((l) => { const p = findProduct(l.sku);
     return '<div class="review-row"><span>' + l.cases + ' × ' + p.size + ' MERV ' + p.merv + '</span><span>' + p.pack + '</span></div>'; }).join("");
   const q = matchVendors(state.cart, state.site, state.window).ok.find((o) => o.vendor.id === "volunteer");
   $("vendorPanels").innerHTML =
-    '<div class="vpanel"><div class="card-name">' + v1.name + ' sees:</div>' +
-    '<div class="card-sub">New order request · ' + TECH.company + ' · ' + state.site.name + ' · ' + state.window.name + '</div>' + linesHtml +
-    (q ? '<div class="card-sub">Their stock covers it. Their quote: items ' + money(q.linesTotal) + ' + delivery ' + (q.fee ? money(q.fee) : "free") + ' = ' + money(q.total) + '.</div>' +
-      '<button class="cta" id="sendQuoteBtn">Send this quote</button><p class="heard" id="quoteSent"></p>'
-      : '<div class="reason">✕ Even they can\'t cover this one as configured.</div>') + '</div>' +
-    '<div class="vpanel"><div class="card-name">' + v2.name + ' sees:</div>' +
-    '<div class="card-sub">Same request, same moment. One line isn\'t in their catalog:</div>' + linesHtml +
+    '<div class="ding">🔔 Ding — new order request</div>' +
+    '<div class="vpanel"><div class="card-name">' + v1.name + '’s screen</div>' +
+    '<div class="card-sub">' + TECH.company + ' · ' + state.site.name + ' · ' + state.window.name + '</div>' + linesHtml +
+    (q ? '<div class="card-sub">Their stock covers this order. On their side, the quote is already priced from their own list: items ' + money(q.linesTotal) + ' + delivery ' + (q.fee ? money(q.fee) : "free") + '.</div>'
+      : '<div class="reason">✕ This time even their stock doesn\'t cover it.</div>') +
+    '<div class="fakecta">' + (q ? 'Quote ' + money(q.total) : 'Quote') + '</div><div class="fakecta alt">Can\'t service</div></div>' +
+    '<div class="ding">🔔 Ding — same request, same second</div>' +
+    '<div class="vpanel"><div class="card-name">' + v2.name + '’s screen</div>' +
+    '<div class="card-sub">The request arrives identically — but one line isn\'t in their catalog:</div>' + linesHtml +
     '<div class="reason">✕ 16×20×4 MERV 13 — not carried</div>' +
-    '<div class="card-sub">So their answer is a decline with the reason attached — the tech sees it in the "can\'t service" list, and the vendor never wastes a quote.</div></div>';
-  const btn = $("sendQuoteBtn");
-  if (btn) btn.addEventListener("click", () => {
-    $("quoteSent").textContent = "Quote sent. On the tech's screen it lands in the ranked offers list — best total on top.";
-    btn.disabled = true; btn.textContent = "Quote sent ✓";
-  });
+    '<div class="card-sub">So their one tap is the decline, with the reason attached. No dead air for the tech, no wasted quote for them.</div>' +
+    '<div class="fakecta alt">Decline — doesn\'t carry 16×20×4 MERV 13</div></div>' +
+    '<p class="heard">Shown as a picture, not wired up — on purpose. The vendor is at a desk or a warehouse screen, not on a roof: no voice input, no mic, just the ding and the request.</p>';
 }
 
 // ---------------- Review ----------------
