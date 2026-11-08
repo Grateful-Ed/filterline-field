@@ -33,8 +33,11 @@ can't make the window), so a "no" is information, not silence.
    contact details, a delivery window, a spoken drop-off note.
 3. **The network answers.** The matching engine checks every vendor against
    the order and ranks the serviceable ones by items + delivery. The tech
-   picks. A "vendor's side" screen shows the same request arriving at two
-   vendor accounts — one quoting, one declining with its reason.
+   picks. A "vendor's side" screen shows what lands on a supplier's phone when
+   an order goes out — a "ding, new order request" panel with the request on
+   it — as a static visual. The vendor side is deliberately not interactive:
+   suppliers work at a desk or warehouse screen, so no voice input, no mic,
+   just the notification and one tap to quote or decline with a reason.
 4. **Hear the money before you commit.** The review screen reads the order —
    vendor, lines, full estimated cost with delivery and tax — out loud.
 5. **Verification by text.** Placing the order sends a (simulated) text from
