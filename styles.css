@@ -127,3 +127,16 @@ body{background:var(--bg); color:var(--text);
 .fakecta{display:inline-block; background:var(--accent2); color:#fff; font-weight:700;
   font-size:15px; padding:12px 18px; border-radius:var(--radius); margin:12px 8px 2px 0; opacity:.85;}
 .fakecta.alt{background:var(--panel); color:var(--muted); border:1px solid var(--line);}
+
+/* FilterPhone additions: side switch, bid form */
+.sidetabs{display:flex; gap:8px; margin-bottom:10px;}
+.tabbtn{flex:1; min-height:46px; border-radius:14px; border:1px solid var(--line);
+  background:var(--panel); color:var(--muted); font-size:15px; font-weight:700; cursor:pointer;}
+.tabbtn.active{background:var(--accent); border-color:var(--accent); color:#fff;}
+.priceinput{width:92px; min-height:42px; border-radius:10px; border:1px solid var(--line);
+  background:var(--panel); color:var(--text); font-size:16px; font-weight:700;
+  padding:6px 8px; text-align:right;}
+.declinepick{width:100%; min-height:52px; border-radius:14px; border:1px solid var(--line);
+  background:var(--panel2); color:var(--text); font-size:15px; padding:8px 12px; margin-bottom:10px;}
+.minebadge{background:var(--warn); color:#201503;}
+.card[disabled]{cursor:default;}

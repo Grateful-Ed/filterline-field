@@ -1,9 +1,13 @@
 "use strict";
-/* FilterLine — third-party filter ordering marketplace (mock).
-   Order side: an HVAC tech speaks an order for a job site.
-   Vendor side: any filter supplier with a vendor account can answer.
-   The platform's job: find who can ACTUALLY service the order
-   (stock, delivery coverage, window) — then rank those by price.
+/* FilterPhone — real-time RFQ broker between on-site customers and filter
+   suppliers (mock). Both sides live in this one build:
+   Customer side: an HVAC tech speaks an RFQ for a job site and picks a bid.
+   Vendor side: any filter supplier with a vendor account sees the RFQs it
+   can actually service and bids from its own price book, or declines with
+   the reason attached.
+   Serviceability is the gate — stock, delivery coverage, window — and only
+   vendors who pass it can bid. Other vendors' bids are simulated from their
+   price books; a bid placed on the vendor side replaces the simulated one.
    Demo data only: every person, company, site, price and stock count is invented. */
 
 // ---------------- Marketplace data ----------------
@@ -53,25 +57,43 @@ const VENDORS = [
     fees: { asap: 34.95, today: 34.95, tomorrow: 24.95 } }
 ];
 
+/* Standing RFQs from other customers — the vendor inbox is never empty.
+   Set dressing for the mock; bidding on one just marks the bid as sent. */
+const STANDING_RFQS = [
+  { id: "s1", from: "Comfort Pros of Tennessee", who: "R. Alvarez · field tech",
+    lines: [{ sku: "FL-20251-08", cases: 3 }], siteId: "rivergate", windowId: "today", note: "" },
+  { id: "s2", from: "Green Hills Clinic — Facilities", who: "Facilities desk",
+    lines: [{ sku: "FL-24244-13", cases: 2 }], siteId: "stmarys", windowId: "tomorrow", note: "Service entrance, north side." }
+];
+
 const TAX_RATE = 0.102; // invented blended rate for the mock
 
 const findProduct = (sku) => PRODUCTS.find((p) => p.sku === sku);
 const findVendor = (id) => VENDORS.find((v) => v.id === id);
+const findSite = (id) => SITES.find((s) => s.id === id);
+const findWindow = (id) => WINDOWS.find((w) => w.id === id);
 
-/* The matching engine: serviceability is the gate, price only ranks who passed it. */
-function matchVendors(cart, site, win) {
+/* Serviceability for ONE vendor against a set of lines/site/window.
+   Returns the list of reasons it cannot service the request ([] = it can). */
+function cantReasons(v, lines, site, win) {
+  const reasons = [];
+  lines.forEach((l) => {
+    const p = findProduct(l.sku);
+    if (v.prices[l.sku] === undefined) reasons.push("Doesn't carry " + p.size + " MERV " + p.merv);
+    else if ((v.stock[l.sku] || 0) < l.cases) reasons.push("Only " + (v.stock[l.sku] || 0) + " cases of " + p.size + " MERV " + p.merv + " on hand");
+  });
+  if (!v.sites.includes(site.id)) reasons.push("Doesn't deliver to " + site.name);
+  if (!v.windows.includes(win.id)) reasons.push("Can't do " + win.short + " from " + v.city);
+  return reasons;
+}
+
+/* The matching gate over the whole network: who can service, who can't (and why). */
+function matchVendors(lines, site, win) {
   const ok = [], cant = [];
   VENDORS.forEach((v) => {
-    const reasons = [];
-    cart.forEach((l) => {
-      const p = findProduct(l.sku);
-      if (v.prices[l.sku] === undefined) reasons.push("Doesn't carry " + p.size + " MERV " + p.merv);
-      else if ((v.stock[l.sku] || 0) < l.cases) reasons.push("Only " + (v.stock[l.sku] || 0) + " cases of " + p.size + " MERV " + p.merv + " on hand");
-    });
-    if (!v.sites.includes(site.id)) reasons.push("Doesn't deliver to " + site.name);
-    if (!v.windows.includes(win.id)) reasons.push("Can't do " + win.short + " from " + v.city);
+    const reasons = cantReasons(v, lines, site, win);
     if (reasons.length) { cant.push({ vendor: v, reasons }); return; }
-    const linesTotal = cart.reduce((s, l) => s + v.prices[l.sku] * l.cases, 0);
+    const linesTotal = lines.reduce((s, l) => s + v.prices[l.sku] * l.cases, 0);
     const fee = v.fees[win.id] || 0;
     ok.push({ vendor: v, linesTotal, fee, total: linesTotal + fee });
   });
@@ -82,13 +104,19 @@ function matchVendors(cart, site, win) {
 
 // ---------------- State ----------------
 const state = {
-  cart: [],            // { sku, cases }
+  cart: [],            // customer-side RFQ lines { sku, cases }
   site: SITES[0],
   window: WINDOWS[0],
   note: "",
-  vendor: null,        // chosen match { vendor, linesTotal, fee, total }
+  rfq: null,           // the posted RFQ { id, lines, site, window, note }
+  bids: [],            // bids on the live RFQ { vendorId, prices:{sku:n}, fee, linesTotal, total, mine }
+  declines: {},        // live RFQ: vendorId -> decline reason
+  vendor: null,        // chosen bid, shaped for review { vendor, prices, linesTotal, fee, total }
   order: null,         // { number, code, total, eta }
-  entered: ""
+  entered: "",
+  myVendor: "volunteer", // the vendor account being played on the vendor side
+  openRfq: null,       // RFQ open on the bid screen (object from inboxRfqs())
+  sentBids: {}         // standing RFQ id -> true once a bid is sent on it
 };
 let simStep = 0;
 
@@ -108,6 +136,12 @@ function show(screenId) {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+function setSide(vendorSide) {
+  $("tabCustomer").classList.toggle("active", !vendorSide);
+  $("tabVendor").classList.toggle("active", vendorSide);
+  show(vendorSide ? "screen-vhome" : "screen-home");
+}
+
 // ---------------- Speech out (read-back) ----------------
 function speak(text) {
   if ("speechSynthesis" in window) {
@@ -116,7 +150,7 @@ function speak(text) {
   }
 }
 
-// ---------------- Order parser ----------------
+// ---------------- RFQ parser (spoken request -> lines) ----------------
 const NUMWORDS = { one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10, eleven:11, twelve:12, a:1, an:1 };
 
 function parseOrder(text) {
@@ -141,7 +175,7 @@ const SIM_LINES = [
   "one case of 20 by 20 by 4 MERV 8"
 ];
 
-// ---------------- Cart rendering ----------------
+// ---------------- Customer: request lines ----------------
 function renderCart() {
   const area = $("cartArea");
   if (!state.cart.length) { area.classList.add("hidden"); return; }
@@ -156,7 +190,7 @@ function renderCart() {
       '<span class="qty">' + l.cases + '</span>' +
       '<button data-inc="' + it.sku + '" aria-label="one more">+</button></div></div>';
   }).join("");
-  $("stockNote").textContent = "Pricing comes from the vendor network, not a house list — pick the job site and the window, and you'll see who can actually service this order and what they'll charge.";
+  $("stockNote").textContent = "Pricing comes from the vendors' bids, not a house list — pick the job site and the window, post the RFQ, and the suppliers who can actually service it will bid.";
   document.querySelectorAll("[data-inc]").forEach((b) => b.addEventListener("click", () => changeQty(b.dataset.inc, 1)));
   document.querySelectorAll("[data-dec]").forEach((b) => b.addEventListener("click", () => changeQty(b.dataset.dec, -1)));
 }
@@ -166,7 +200,6 @@ function changeQty(sku, d) {
   if (!line) return;
   line.cases += d;
   if (line.cases <= 0) state.cart = state.cart.filter((l) => l.sku !== sku);
-  state.vendor = null;
   renderCart();
 }
 
@@ -182,10 +215,9 @@ function hearOrder(text) {
     const ex = state.cart.find((l) => l.sku === nl.sku);
     if (ex) ex.cases += nl.cases; else state.cart.push(nl);
   });
-  state.vendor = null;
   renderCart();
   const readback = state.cart.map((l) => { const it = findProduct(l.sku); return l.cases + (l.cases === 1 ? " case" : " cases") + " of " + it.size.replace(/×/g, " by ") + ", MERV " + it.merv; }).join("; ");
-  speak("Got it. " + readback + ". Next, pick the job site and the window, and I will put it out to the vendor network.");
+  speak("Got it. " + readback + ". Next, pick the job site and the window, and post the RFQ to the vendor network.");
 }
 
 // ---------------- Voice in ----------------
@@ -234,67 +266,188 @@ function renderSites() {
     '<div class="card-name">' + s.name + '</div><div class="card-sub">' + s.sub + '</div>' +
     '<div class="card-sub">Site contact: ' + s.contact + '</div></button>').join("");
   document.querySelectorAll("[data-site]").forEach((b) => b.addEventListener("click", () => {
-    state.site = SITES.find((s) => s.id === b.dataset.site); state.vendor = null; renderSites();
+    state.site = SITES.find((s) => s.id === b.dataset.site); renderSites();
   }));
   $("windowCards").innerHTML = WINDOWS.map((w) =>
     '<button class="card' + (state.window.id === w.id ? " selected" : "") + '" data-win="' + w.id + '">' +
     '<div class="card-name">' + w.name + '</div><div class="card-sub">' + w.sub + '</div></button>').join("");
   document.querySelectorAll("[data-win]").forEach((b) => b.addEventListener("click", () => {
-    state.window = WINDOWS.find((w) => w.id === b.dataset.win); state.vendor = null; renderSites();
+    state.window = WINDOWS.find((w) => w.id === b.dataset.win); renderSites();
   }));
 }
 
-// ---------------- Offers (the network answers) ----------------
-function renderOffers() {
-  const { ok, cant } = matchVendors(state.cart, state.site, state.window);
-  $("offersSummary").textContent = ok.length + " of " + VENDORS.length + " vendors on the network can service this order — " +
-    state.site.name + ", " + state.window.name.toLowerCase() + ". Ranked by items + delivery, before tax.";
-  $("offersList").innerHTML = ok.map((o, i) =>
-    '<button class="card offer' + (state.vendor && state.vendor.vendor.id === o.vendor.id ? " selected" : "") + '" data-offer="' + o.vendor.id + '">' +
-    (i === 0 ? '<div class="bestbadge">Best price</div>' : "") +
-    '<div class="card-name">' + o.vendor.name + '</div>' +
-    '<div class="card-sub">' + o.vendor.city + ' · ' + o.vendor.blurb + '</div>' +
-    '<div class="card-sub">Items ' + money(o.linesTotal) + ' · Delivery ' + (o.fee ? money(o.fee) : "free") + ' · Arrives ' + state.window.eta + '</div>' +
-    '<div class="offer-total">' + money(o.total) + '</div></button>').join("");
-  document.querySelectorAll("[data-offer]").forEach((b) => b.addEventListener("click", () => {
-    state.vendor = ok.find((o) => o.vendor.id === b.dataset.offer);
+// ---------------- Customer: post the RFQ, collect bids ----------------
+function bidFromBook(v, lines, win) {
+  const prices = {};
+  lines.forEach((l) => { prices[l.sku] = v.prices[l.sku]; });
+  const linesTotal = lines.reduce((s, l) => s + prices[l.sku] * l.cases, 0);
+  const fee = v.fees[win.id] || 0;
+  return { vendorId: v.id, prices, fee, linesTotal, total: linesTotal + fee, mine: false };
+}
+
+function postRfq() {
+  if (!state.cart.length) return;
+  state.rfq = { id: "live", lines: state.cart.map((l) => ({ sku: l.sku, cases: l.cases })),
+    site: state.site, window: state.window, note: state.note, from: TECH.company, who: TECH.name + " · field tech" };
+  state.declines = {};
+  state.vendor = null;
+  // Simulated bids: every vendor who can service it bids from its price book.
+  state.bids = matchVendors(state.rfq.lines, state.site, state.window).ok
+    .map((o) => bidFromBook(o.vendor, state.rfq.lines, state.window));
+  renderBids();
+  show("screen-bids");
+  speak("Your RFQ is out. " + state.bids.length + " vendors can service it and have bid.");
+}
+
+function renderBids() {
+  if (!state.rfq) return;
+  const { cant } = matchVendors(state.rfq.lines, state.rfq.site, state.rfq.window);
+  const ranked = state.bids.slice().sort((a, b) => a.total - b.total);
+  $("bidsSummary").textContent = state.bids.length + " bid" + (state.bids.length === 1 ? "" : "s") + " on RFQ for " +
+    state.rfq.site.name + ", " + state.rfq.window.name.toLowerCase() + ". Ranked by items + delivery, before tax." +
+    (state.bids.some((b) => b.mine) ? "" : " Switch to the vendor side to place one yourself.");
+  $("bidsList").innerHTML = ranked.map((b, i) => {
+    const v = findVendor(b.vendorId);
+    return '<button class="card offer" data-bid="' + b.vendorId + '">' +
+    (i === 0 ? '<div class="bestbadge">Best price</div>' : "") + (b.mine ? '<div class="bestbadge minebadge">Your bid</div>' : "") +
+    '<div class="card-name">' + v.name + '</div>' +
+    '<div class="card-sub">' + v.city + ' · ' + v.blurb + '</div>' +
+    '<div class="card-sub">Items ' + money(b.linesTotal) + ' · Delivery ' + (b.fee ? money(b.fee) : "free") + ' · Arrives ' + state.rfq.window.eta + '</div>' +
+    '<div class="offer-total">' + money(b.total) + '</div></button>';
+  }).join("");
+  document.querySelectorAll("[data-bid]").forEach((btn) => btn.addEventListener("click", () => {
+    const b = state.bids.find((x) => x.vendorId === btn.dataset.bid);
+    state.vendor = { vendor: findVendor(b.vendorId), prices: b.prices, linesTotal: b.linesTotal, fee: b.fee, total: b.total };
     renderReview();
     show("screen-review");
   }));
-  $("cantList").innerHTML = cant.length
-    ? '<h3 class="section-title">Can\'t service this order</h3>' + cant.map((c) =>
+  const declined = VENDORS.filter((v) => state.declines[v.id]);
+  $("cantList").innerHTML =
+    (cant.length ? '<h3 class="section-title">Can\'t service this RFQ</h3>' + cant.map((c) =>
       '<div class="card cant"><div class="card-name">' + c.vendor.name + '</div>' +
       '<div class="card-sub">' + c.vendor.city + '</div>' +
-      c.reasons.map((r) => '<div class="reason">✕ ' + r + '</div>').join("") + '</div>').join("")
-    : "";
+      c.reasons.map((r) => '<div class="reason">✕ ' + r + '</div>').join("") + '</div>').join("") : "") +
+    (declined.length ? '<h3 class="section-title">Declined</h3>' + declined.map((v) =>
+      '<div class="card cant"><div class="card-name">' + v.name + '</div>' +
+      '<div class="card-sub">' + v.city + '</div>' +
+      '<div class="reason">✕ ' + state.declines[v.id] + '</div></div>').join("") : "");
 }
 
-// ---------------- Vendor's side (visual explainer — deliberately not interactive) ----------------
-function renderVendorView() {
-  const v1 = findVendor("volunteer"), v2 = findVendor("musiccity");
-  const linesHtml = state.cart.map((l) => { const p = findProduct(l.sku);
-    return '<div class="review-row"><span>' + l.cases + ' × ' + p.size + ' MERV ' + p.merv + '</span><span>' + p.pack + '</span></div>'; }).join("");
-  const q = matchVendors(state.cart, state.site, state.window).ok.find((o) => o.vendor.id === "volunteer");
-  $("vendorPanels").innerHTML =
-    '<div class="ding">🔔 Ding — new order request</div>' +
-    '<div class="vpanel"><div class="card-name">' + v1.name + '’s screen</div>' +
-    '<div class="card-sub">' + TECH.company + ' · ' + state.site.name + ' · ' + state.window.name + '</div>' + linesHtml +
-    (q ? '<div class="card-sub">Their stock covers this order. On their side, the quote is already priced from their own list: items ' + money(q.linesTotal) + ' + delivery ' + (q.fee ? money(q.fee) : "free") + '.</div>'
-      : '<div class="reason">✕ This time even their stock doesn\'t cover it.</div>') +
-    '<div class="fakecta">' + (q ? 'Quote ' + money(q.total) : 'Quote') + '</div><div class="fakecta alt">Can\'t service</div></div>' +
-    '<div class="ding">🔔 Ding — same request, same second</div>' +
-    '<div class="vpanel"><div class="card-name">' + v2.name + '’s screen</div>' +
-    '<div class="card-sub">The request arrives identically — but one line isn\'t in their catalog:</div>' + linesHtml +
-    '<div class="reason">✕ 16×20×4 MERV 13 — not carried</div>' +
-    '<div class="card-sub">So their one tap is the decline, with the reason attached. No dead air for the tech, no wasted quote for them.</div>' +
-    '<div class="fakecta alt">Decline — doesn\'t carry 16×20×4 MERV 13</div></div>' +
-    '<p class="heard">Shown as a picture, not wired up — on purpose. The vendor is at a desk or a warehouse screen, not on a roof: no voice input, no mic, just the ding and the request.</p>';
+// ---------------- Vendor side: pick account, inbox, bid ----------------
+function renderVendorPick() {
+  $("vendorPick").innerHTML = VENDORS.map((v) =>
+    '<button class="card' + (state.myVendor === v.id ? " selected" : "") + '" data-vendor="' + v.id + '">' +
+    '<div class="card-name">' + v.name + '</div>' +
+    '<div class="card-sub">' + v.city + ' · ' + v.blurb + '</div>' +
+    '<div class="card-sub">Carries ' + Object.keys(v.prices).length + ' of ' + PRODUCTS.length + ' filters · delivers to ' +
+    v.sites.length + ' of ' + SITES.length + ' sites</div></button>').join("");
+  document.querySelectorAll("[data-vendor]").forEach((b) => b.addEventListener("click", () => {
+    state.myVendor = b.dataset.vendor;
+    renderInbox();
+    show("screen-vinbox");
+  }));
+}
+
+/* The inbox for the played vendor: the live customer RFQ (when posted) plus standing RFQs. */
+function inboxRfqs() {
+  const list = [];
+  if (state.rfq) list.push({ id: "live", from: state.rfq.from, who: state.rfq.who, lines: state.rfq.lines,
+    site: state.rfq.site, window: state.rfq.window, note: state.rfq.note, live: true });
+  STANDING_RFQS.forEach((r) => list.push({ id: r.id, from: r.from, who: r.who, lines: r.lines,
+    site: findSite(r.siteId), window: findWindow(r.windowId), note: r.note, live: false }));
+  return list;
+}
+
+function renderInbox() {
+  const v = findVendor(state.myVendor);
+  $("vinboxTitle").textContent = v.name;
+  const rfqs = inboxRfqs();
+  const can = rfqs.filter((r) => !cantReasons(v, r.lines, r.site, r.window).length).length;
+  $("vinboxSub").textContent = "You can service " + can + " of " + rfqs.length + " open RFQs. The rest never reach a bid — the reasons show on the card.";
+  $("vinboxList").innerHTML = rfqs.map((r) => {
+    const reasons = cantReasons(v, r.lines, r.site, r.window);
+    const linesHtml = r.lines.map((l) => { const p = findProduct(l.sku); return l.cases + " × " + p.size + " MERV " + p.merv; }).join(" · ");
+    const status = r.live && state.declines[v.id] ? '<div class="reason">✕ You declined this one — ' + state.declines[v.id] + '</div>'
+      : r.live && state.bids.some((b) => b.vendorId === v.id && b.mine) ? '<div class="card-price">Your bid is in — tap to adjust it</div>'
+      : state.sentBids[r.id] ? '<div class="card-price">Bid sent ✓</div>' : "";
+    return '<button class="card' + (reasons.length ? " cant" : "") + '" data-rfq="' + r.id + '"' + (reasons.length ? " disabled" : "") + '>' +
+      (r.live ? '<div class="bestbadge">Live — from the customer side</div>' : "") +
+      '<div class="card-name">' + r.from + '</div>' +
+      '<div class="card-sub">' + r.who + ' · ' + r.site.name + ' · ' + r.window.name + '</div>' +
+      '<div class="card-sub">' + linesHtml + '</div>' + status +
+      reasons.map((x) => '<div class="reason">✕ ' + x + '</div>').join("") + '</button>';
+  }).join("");
+  document.querySelectorAll("[data-rfq]").forEach((b) => b.addEventListener("click", () => {
+    state.openRfq = inboxRfqs().find((r) => r.id === b.dataset.rfq);
+    renderBidForm();
+    show("screen-vbid");
+  }));
+}
+
+function renderBidForm() {
+  const v = findVendor(state.myVendor), r = state.openRfq;
+  $("vbidHead").textContent = v.name + " bidding on " + r.from + " — " + r.site.name + ", " + r.window.name.toLowerCase() +
+    ". Prices start from your book; change any of them.";
+  const existing = r.live ? state.bids.find((b) => b.vendorId === v.id) : null;
+  $("vbidLines").innerHTML = r.lines.map((l) => {
+    const p = findProduct(l.sku);
+    const start = existing && existing.prices[l.sku] !== undefined ? existing.prices[l.sku] : v.prices[l.sku];
+    return '<div class="review-row"><span>' + l.cases + ' × ' + p.size + ' MERV ' + p.merv + ' — per case</span>' +
+      '<span>$ <input class="priceinput" data-price="' + l.sku + '" type="number" min="0" step="0.01" value="' + start.toFixed(2) + '"></span></div>';
+  }).join("");
+  $("feeInput").value = (existing ? existing.fee : (v.fees[r.window.id] || 0)).toFixed(2);
+  document.querySelectorAll("[data-price]").forEach((inp) => inp.addEventListener("input", updateBidTotal));
+  $("feeInput").addEventListener("input", updateBidTotal);
+  updateBidTotal();
+}
+
+function readBidForm() {
+  const r = state.openRfq, prices = {};
+  let linesTotal = 0;
+  document.querySelectorAll("[data-price]").forEach((inp) => {
+    const val = Math.max(0, parseFloat(inp.value) || 0);
+    prices[inp.dataset.price] = val;
+    const line = r.lines.find((l) => l.sku === inp.dataset.price);
+    linesTotal += val * line.cases;
+  });
+  const fee = Math.max(0, parseFloat($("feeInput").value) || 0);
+  return { prices, fee, linesTotal, total: linesTotal + fee };
+}
+
+function updateBidTotal() { $("vbidTotal").textContent = money(readBidForm().total); }
+
+function submitBid() {
+  const v = findVendor(state.myVendor), r = state.openRfq, f = readBidForm();
+  if (r.live) {
+    const bid = { vendorId: v.id, prices: f.prices, fee: f.fee, linesTotal: f.linesTotal, total: f.total, mine: true };
+    const ix = state.bids.findIndex((b) => b.vendorId === v.id);
+    if (ix >= 0) state.bids[ix] = bid; else state.bids.push(bid);
+    delete state.declines[v.id];
+    renderBids();
+    speak("Bid in. " + v.name + " at " + money(f.total) + ".");
+    setSide(false); show("screen-bids");
+  } else {
+    state.sentBids[r.id] = true;
+    renderInbox();
+    show("screen-vinbox");
+  }
+}
+
+function declineRfq() {
+  const v = findVendor(state.myVendor), r = state.openRfq;
+  if (r.live) {
+    state.declines[v.id] = $("declineReason").value;
+    state.bids = state.bids.filter((b) => b.vendorId !== v.id);
+    renderBids();
+  }
+  renderInbox();
+  show("screen-vinbox");
 }
 
 // ---------------- Review ----------------
 function reviewText() {
-  const t = grandTotals(), v = state.vendor.vendor;
-  const lines = state.cart.map((l) => { const it = findProduct(l.sku); return l.cases + " × " + it.size + " MERV " + it.merv + " — " + money(v.prices[l.sku] * l.cases); }).join("; ");
+  const t = grandTotals(), v = state.vendor.vendor, prices = state.vendor.prices;
+  const lines = state.cart.map((l) => { const it = findProduct(l.sku); return l.cases + " × " + it.size + " MERV " + it.merv + " — " + money(prices[l.sku] * l.cases); }).join("; ");
   return { lines, t,
     spoken: "Your order with " + v.name + ": " + lines.replace(/×/g, "cases of") +
       ". Delivered to " + state.site.name + ", " + state.window.eta +
@@ -303,11 +456,11 @@ function reviewText() {
 }
 
 function renderReview() {
-  const { t } = reviewText(), v = state.vendor.vendor;
+  const { t } = reviewText(), v = state.vendor.vendor, prices = state.vendor.prices;
   $("reviewBody").innerHTML =
     '<div class="review-row"><span>Vendor</span><span>' + v.name + ' · ' + v.city + '</span></div>' +
     state.cart.map((l) => { const it = findProduct(l.sku);
-      return '<div class="review-row"><span>' + l.cases + ' × ' + it.size + ' MERV ' + it.merv + '</span><span>' + money(v.prices[l.sku] * l.cases) + '</span></div>'; }).join("") +
+      return '<div class="review-row"><span>' + l.cases + ' × ' + it.size + ' MERV ' + it.merv + '</span><span>' + money(prices[l.sku] * l.cases) + '</span></div>'; }).join("") +
     '<div class="review-row"><span>Deliver to</span><span>' + state.site.name + '</span></div>' +
     '<div class="review-row"><span>Arrives</span><span>' + state.window.eta + '</span></div>' +
     (state.note ? '<div class="review-row"><span>Drop-off note</span><span>' + state.note + '</span></div>' : "") +
@@ -320,11 +473,11 @@ function renderReview() {
 function placeOrder() {
   const t = grandTotals(), v = state.vendor.vendor;
   if (t.total > TECH.limit) { speak("That is over your " + money(TECH.limit) + " order limit. Your dispatcher gets a request to approve it."); return; }
-  const num = "FL-" + Math.floor(100000 + Math.random() * 900000);
+  const num = "FP-" + Math.floor(100000 + Math.random() * 900000);
   const code = String(Math.floor(100000 + Math.random() * 900000));
   state.order = { number: num, code, total: t.total, eta: state.window.eta };
   state.entered = "";
-  $("smsBody").textContent = "FilterLine · " + v.name + ": Order " + num + " confirmed for " + state.site.name +
+  $("smsBody").textContent = "FilterPhone · " + v.name + ": Order " + num + " confirmed for " + state.site.name +
     ". Arriving " + state.window.eta + ". Estimated total " + money(t.total) +
     ". Your verification code is " + code + " — enter it in the app to lock your delivery slot.";
   renderDots();
@@ -364,6 +517,8 @@ function keyPress(k) {
 }
 
 // ---------------- Wiring ----------------
+$("tabCustomer").addEventListener("click", () => setSide(false));
+$("tabVendor").addEventListener("click", () => { renderVendorPick(); setSide(true); });
 $("micBtn").addEventListener("click", () => listen(hearOrder, $("micBtn"), $("micLabel")));
 $("noteBtn").addEventListener("click", () => {
   const samples = ["Leave them at dock B and text Marcus when you're close.", "Gate code is on file — ring the service bell twice."];
@@ -372,11 +527,16 @@ $("noteBtn").addEventListener("click", () => {
   listen((txt) => { state.note = txt; $("noteHeard").textContent = "Note: “" + txt + "”"; $("noteLabel").textContent = "Note saved — tap to redo"; }, $("noteBtn"), $("noteLabel"));
 });
 $("toSiteBtn").addEventListener("click", () => { renderSites(); show("screen-site"); });
-$("toOffersBtn").addEventListener("click", () => { renderOffers(); show("screen-offers"); });
-$("vendorViewBtn").addEventListener("click", () => { renderVendorView(); show("screen-vendor"); });
+$("postRfqBtn").addEventListener("click", postRfq);
+$("toVendorBtn").addEventListener("click", () => { renderVendorPick(); setSide(true); });
+$("submitBidBtn").addEventListener("click", submitBid);
+$("declineBtn").addEventListener("click", declineRfq);
 $("toReviewSpeakBtn").addEventListener("click", () => speak(reviewText().spoken));
 $("placeBtn").addEventListener("click", placeOrder);
-$("againBtn").addEventListener("click", () => { state.cart = []; state.vendor = null; state.order = null; renderCart(); show("screen-home"); });
+$("againBtn").addEventListener("click", () => {
+  state.cart = []; state.vendor = null; state.order = null; state.rfq = null; state.bids = []; state.declines = {};
+  renderCart(); show("screen-home");
+});
 document.querySelectorAll("[data-back]").forEach((b) => b.addEventListener("click", () => show(b.dataset.back)));
 $("keypad").innerHTML = ["1","2","3","4","5","6","7","8","9","clr","0","del"]
   .map((k) => '<button data-key="' + k + '">' + (k === "clr" ? "C" : k === "del" ? "⌫" : k) + "</button>").join("");
