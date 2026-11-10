@@ -140,3 +140,12 @@ body{background:var(--bg); color:var(--text);
   background:var(--panel2); color:var(--text); font-size:15px; padding:8px 12px; margin-bottom:10px;}
 .minebadge{background:var(--warn); color:#201503;}
 .card[disabled]{cursor:default;}
+
+/* Open-market rebuild additions: promise picker, add-on services */
+.promisepick{width:100%; min-height:52px; border-radius:14px; border:1px solid var(--line);
+  background:var(--panel2); color:var(--text); font-size:15px; padding:8px 12px; margin-bottom:10px;}
+.addon{display:flex; align-items:center; gap:12px; background:var(--panel2);
+  border:1px solid var(--line); border-radius:var(--radius); padding:14px; margin-bottom:10px; cursor:pointer;}
+.addon input{width:24px; height:24px; flex:none; accent-color:var(--accent);}
+.addon-name{flex:1; font-size:15px; line-height:1.4;}
+.addon-price{font-weight:700; color:var(--accent2); white-space:nowrap;}

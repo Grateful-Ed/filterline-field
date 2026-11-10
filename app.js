@@ -1,14 +1,22 @@
 "use strict";
 /* FilterPhone — real-time RFQ broker between on-site customers and filter
-   suppliers (mock). Both sides live in this one build:
-   Customer side: an HVAC tech speaks an RFQ for a job site and picks a bid.
-   Vendor side: any filter supplier with a vendor account sees the RFQs it
-   can actually service and bids from its own price book, or declines with
-   the reason attached.
-   Serviceability is the gate — stock, delivery coverage, window — and only
-   vendors who pass it can bid. Other vendors' bids are simulated from their
-   price books; a bid placed on the vendor side replaces the simulated one.
-   Demo data only: every person, company, site, price and stock count is invented. */
+   suppliers (mock). Both sides live in this one build, run as an OPEN MARKET
+   (freight-market style):
+   Customer side: an HVAC tech speaks an RFQ — lines, a job site, and the
+   delivery window he requires — and posts it to the open market.
+   Vendor side: each supplier's feed is filtered by its own constraints
+   (catalog, stock, delivery coverage, windows). An RFQ appears only if the
+   vendor can service it. The vendor bids — from its own price book, with a
+   promised delivery window inside the customer's required range — or passes
+   silently. No pass, decline, or can't-service state ever reaches the
+   customer; the customer sees only bids: vendor name, total, promised window.
+   Cost carries the most influence on the award, but it is not the decider:
+   a tighter promised window can outweigh a price gap.
+   Bid details (breakdown, extra details, optional services) live in the
+   details view, never on the bid card. Other vendors' bids are simulated
+   from their price books; a bid placed on the vendor side replaces the
+   simulated one. Demo data only: every person, company, site, price and
+   stock count is invented. */
 
 // ---------------- Marketplace data ----------------
 const TECH = { name: "Dale R.", company: "Summit Air Mechanical", crew: "Crew 7", van: "Van 214", limit: 750 };
@@ -27,10 +35,23 @@ const SITES = [
   { id: "depot",     name: "Summit Air Depot", sub: "Your own shop · will-call cage — grab and go", contact: "Shop foreman" }
 ];
 
+/* The customer's window is a REQUIRED RANGE. A bid answers with the vendor's
+   own promised window inside that range (promises[]). */
 const WINDOWS = [
-  { id: "asap",     short: "ASAP", name: "ASAP — next truck out", sub: "Within the hour where offered", eta: "today by 1:30 PM" },
-  { id: "today",    short: "Today", name: "Today, before 5 PM",    sub: "On the afternoon route",      eta: "today by 5:00 PM" },
-  { id: "tomorrow", short: "Tomorrow", name: "Tomorrow morning",   sub: "First route of the day",       eta: "tomorrow by 9:00 AM" }
+  { id: "asap",     short: "ASAP", name: "ASAP — next truck out", sub: "Within the hour where offered", eta: "today by 1:30 PM",
+    promises: ["Within 30 minutes", "In 45–60 minutes"] },
+  { id: "today",    short: "Today", name: "Today, before 5 PM",    sub: "On the afternoon route",      eta: "today by 5:00 PM",
+    promises: ["Today, 11 AM–12 PM", "Today, 1–2 PM", "Today, 3–5 PM"] },
+  { id: "tomorrow", short: "Tomorrow", name: "Tomorrow morning",   sub: "First route of the day",       eta: "tomorrow by 9:00 AM",
+    promises: ["Tomorrow, 7–8 AM", "Tomorrow, 8–9:30 AM"] }
+];
+
+/* Optional services a bid can offer. Chosen in the bid DETAILS view only —
+   never shown on the customer's bid cards. */
+const ADDONS = [
+  { id: "inside", name: "Inside delivery — carried to the air handler", price: 35 },
+  { id: "haul",   name: "Haul away the old filters", price: 20 },
+  { id: "call",   name: "Call the site contact 30 minutes out", price: 0 }
 ];
 
 /* Vendor accounts on the network. Missing price/stock entry = doesn't carry that filter. */
@@ -57,7 +78,7 @@ const VENDORS = [
     fees: { asap: 34.95, today: 34.95, tomorrow: 24.95 } }
 ];
 
-/* Standing RFQs from other customers — the vendor inbox is never empty.
+/* Standing RFQs from other customers — the vendor feed is never empty.
    Set dressing for the mock; bidding on one just marks the bid as sent. */
 const STANDING_RFQS = [
   { id: "s1", from: "Comfort Pros of Tennessee", who: "R. Alvarez · field tech",
@@ -72,33 +93,34 @@ const findProduct = (sku) => PRODUCTS.find((p) => p.sku === sku);
 const findVendor = (id) => VENDORS.find((v) => v.id === id);
 const findSite = (id) => SITES.find((s) => s.id === id);
 const findWindow = (id) => WINDOWS.find((w) => w.id === id);
+const findAddon = (id) => ADDONS.find((a) => a.id === id);
 
-/* Serviceability for ONE vendor against a set of lines/site/window.
-   Returns the list of reasons it cannot service the request ([] = it can). */
+/* The default promised window a vendor offers inside a required range. */
+function promiseFor(v, win) {
+  const ix = VENDORS.findIndex((x) => x.id === v.id);
+  return win.promises[Math.abs(ix) % win.promises.length];
+}
+
+/* Serviceability for ONE vendor — used ONLY to filter that vendor's feed
+   (and to decide which simulated bids exist). Reasons are internal to the
+   filter; in an open market they are never shown to the customer. */
 function cantReasons(v, lines, site, win) {
   const reasons = [];
   lines.forEach((l) => {
     const p = findProduct(l.sku);
-    if (v.prices[l.sku] === undefined) reasons.push("Doesn't carry " + p.size + " MERV " + p.merv);
-    else if ((v.stock[l.sku] || 0) < l.cases) reasons.push("Only " + (v.stock[l.sku] || 0) + " cases of " + p.size + " MERV " + p.merv + " on hand");
+    if (v.prices[l.sku] === undefined) reasons.push("doesn't carry");
+    else if ((v.stock[l.sku] || 0) < l.cases) reasons.push("stock short");
   });
-  if (!v.sites.includes(site.id)) reasons.push("Doesn't deliver to " + site.name);
-  if (!v.windows.includes(win.id)) reasons.push("Can't do " + win.short + " from " + v.city);
+  if (!v.sites.includes(site.id)) reasons.push("no coverage");
+  if (!v.windows.includes(win.id)) reasons.push("can't meet a window in range");
   return reasons;
 }
 
-/* The matching gate over the whole network: who can service, who can't (and why). */
-function matchVendors(lines, site, win) {
-  const ok = [], cant = [];
-  VENDORS.forEach((v) => {
-    const reasons = cantReasons(v, lines, site, win);
-    if (reasons.length) { cant.push({ vendor: v, reasons }); return; }
-    const linesTotal = lines.reduce((s, l) => s + v.prices[l.sku] * l.cases, 0);
-    const fee = v.fees[win.id] || 0;
-    ok.push({ vendor: v, linesTotal, fee, total: linesTotal + fee });
-  });
-  ok.sort((a, b) => a.total - b.total);
-  return { ok, cant };
+function canService(v, lines, site, win) { return cantReasons(v, lines, site, win).length === 0; }
+
+/* Vendors who can service a request — the only ones who can bid at all. */
+function serviceableVendors(lines, site, win) {
+  return VENDORS.filter((v) => canService(v, lines, site, win));
 }
 // ---------------- End marketplace data ----------------
 
@@ -108,10 +130,10 @@ const state = {
   site: SITES[0],
   window: WINDOWS[0],
   note: "",
-  rfq: null,           // the posted RFQ { id, lines, site, window, note }
-  bids: [],            // bids on the live RFQ { vendorId, prices:{sku:n}, fee, linesTotal, total, mine }
-  declines: {},        // live RFQ: vendorId -> decline reason
-  vendor: null,        // chosen bid, shaped for review { vendor, prices, linesTotal, fee, total }
+  rfq: null,           // the posted RFQ { id, lines, site, window, note, from, who }
+  bids: [],            // bids on the live RFQ { vendorId, prices:{sku:n}, fee, linesTotal, total, promise, mine }
+  vendor: null,        // chosen bid, shaped for details { vendor, prices, linesTotal, fee, total, promise }
+  addons: [],          // addon ids chosen in the details view for the chosen bid
   order: null,         // { number, code, total, eta }
   entered: "",
   myVendor: "volunteer", // the vendor account being played on the vendor side
@@ -124,11 +146,15 @@ let simStep = 0;
 const $ = (id) => document.getElementById(id);
 const money = (n) => "$" + n.toFixed(2);
 
+function addonsTotal() {
+  return state.addons.reduce((s, id) => s + findAddon(id).price, 0);
+}
+
 function grandTotals() {
   if (!state.vendor) return null;
-  const sub = state.vendor.linesTotal, fee = state.vendor.fee;
-  const tax = (sub + fee) * TAX_RATE;
-  return { sub, fee, tax, total: sub + fee + tax };
+  const sub = state.vendor.linesTotal, fee = state.vendor.fee, add = addonsTotal();
+  const tax = (sub + fee + add) * TAX_RATE;
+  return { sub, fee, add, tax, total: sub + fee + add + tax };
 }
 
 function show(screenId) {
@@ -190,7 +216,7 @@ function renderCart() {
       '<span class="qty">' + l.cases + '</span>' +
       '<button data-inc="' + it.sku + '" aria-label="one more">+</button></div></div>';
   }).join("");
-  $("stockNote").textContent = "Pricing comes from the vendors' bids, not a house list — pick the job site and the window, post the RFQ, and the suppliers who can actually service it will bid.";
+  $("stockNote").textContent = "Pricing comes from the vendors' bids, not a house list — pick the job site and the window you require, post the RFQ, and the suppliers who can service it will bid.";
   document.querySelectorAll("[data-inc]").forEach((b) => b.addEventListener("click", () => changeQty(b.dataset.inc, 1)));
   document.querySelectorAll("[data-dec]").forEach((b) => b.addEventListener("click", () => changeQty(b.dataset.dec, -1)));
 }
@@ -217,7 +243,7 @@ function hearOrder(text) {
   });
   renderCart();
   const readback = state.cart.map((l) => { const it = findProduct(l.sku); return l.cases + (l.cases === 1 ? " case" : " cases") + " of " + it.size.replace(/×/g, " by ") + ", MERV " + it.merv; }).join("; ");
-  speak("Got it. " + readback + ". Next, pick the job site and the window, and post the RFQ to the vendor network.");
+  speak("Got it. " + readback + ". Next, pick the job site and the window you require, and post the RFQ to the open market.");
 }
 
 // ---------------- Voice in ----------------
@@ -282,58 +308,51 @@ function bidFromBook(v, lines, win) {
   lines.forEach((l) => { prices[l.sku] = v.prices[l.sku]; });
   const linesTotal = lines.reduce((s, l) => s + prices[l.sku] * l.cases, 0);
   const fee = v.fees[win.id] || 0;
-  return { vendorId: v.id, prices, fee, linesTotal, total: linesTotal + fee, mine: false };
+  return { vendorId: v.id, prices, fee, linesTotal, total: linesTotal + fee, promise: promiseFor(v, win), mine: false };
 }
 
 function postRfq() {
   if (!state.cart.length) return;
   state.rfq = { id: "live", lines: state.cart.map((l) => ({ sku: l.sku, cases: l.cases })),
     site: state.site, window: state.window, note: state.note, from: TECH.company, who: TECH.name + " · field tech" };
-  state.declines = {};
   state.vendor = null;
+  state.addons = [];
   // Simulated bids: every vendor who can service it bids from its price book.
-  state.bids = matchVendors(state.rfq.lines, state.site, state.window).ok
-    .map((o) => bidFromBook(o.vendor, state.rfq.lines, state.window));
+  // Vendors who can't service it — or who would pass — simply never appear.
+  state.bids = serviceableVendors(state.rfq.lines, state.site, state.window)
+    .map((v) => bidFromBook(v, state.rfq.lines, state.window));
   renderBids();
   show("screen-bids");
-  speak("Your RFQ is out. " + state.bids.length + " vendors can service it and have bid.");
+  speak("Your RFQ is out on the open market. " + state.bids.length + " bids so far.");
 }
 
+/* The bid card is the whole ballgame for the customer: name, total, promise.
+   No breakdown, no blurb, no word from anyone who didn't bid. */
 function renderBids() {
   if (!state.rfq) return;
-  const { cant } = matchVendors(state.rfq.lines, state.rfq.site, state.rfq.window);
   const ranked = state.bids.slice().sort((a, b) => a.total - b.total);
-  $("bidsSummary").textContent = state.bids.length + " bid" + (state.bids.length === 1 ? "" : "s") + " on RFQ for " +
-    state.rfq.site.name + ", " + state.rfq.window.name.toLowerCase() + ". Ranked by items + delivery, before tax." +
+  $("bidsSummary").textContent = state.bids.length + " bid" + (state.bids.length === 1 ? "" : "s") + " · " +
+    state.rfq.site.name + " · you required: " + state.rfq.window.name.toLowerCase() +
+    ". Sorted by total — cost carries the most weight, but a tighter promised window can be worth paying for. Tap a bid for its details." +
     (state.bids.some((b) => b.mine) ? "" : " Switch to the vendor side to place one yourself.");
   $("bidsList").innerHTML = ranked.map((b, i) => {
     const v = findVendor(b.vendorId);
     return '<button class="card offer" data-bid="' + b.vendorId + '">' +
-    (i === 0 ? '<div class="bestbadge">Best price</div>' : "") + (b.mine ? '<div class="bestbadge minebadge">Your bid</div>' : "") +
+    (i === 0 ? '<div class="bestbadge">Lowest total</div>' : "") + (b.mine ? '<div class="bestbadge minebadge">Your bid</div>' : "") +
     '<div class="card-name">' + v.name + '</div>' +
-    '<div class="card-sub">' + v.city + ' · ' + v.blurb + '</div>' +
-    '<div class="card-sub">Items ' + money(b.linesTotal) + ' · Delivery ' + (b.fee ? money(b.fee) : "free") + ' · Arrives ' + state.rfq.window.eta + '</div>' +
+    '<div class="card-sub">Promised window: ' + b.promise + '</div>' +
     '<div class="offer-total">' + money(b.total) + '</div></button>';
   }).join("");
   document.querySelectorAll("[data-bid]").forEach((btn) => btn.addEventListener("click", () => {
     const b = state.bids.find((x) => x.vendorId === btn.dataset.bid);
-    state.vendor = { vendor: findVendor(b.vendorId), prices: b.prices, linesTotal: b.linesTotal, fee: b.fee, total: b.total };
+    state.vendor = { vendor: findVendor(b.vendorId), prices: b.prices, linesTotal: b.linesTotal, fee: b.fee, total: b.total, promise: b.promise };
+    state.addons = [];
     renderReview();
     show("screen-review");
   }));
-  const declined = VENDORS.filter((v) => state.declines[v.id]);
-  $("cantList").innerHTML =
-    (cant.length ? '<h3 class="section-title">Can\'t service this RFQ</h3>' + cant.map((c) =>
-      '<div class="card cant"><div class="card-name">' + c.vendor.name + '</div>' +
-      '<div class="card-sub">' + c.vendor.city + '</div>' +
-      c.reasons.map((r) => '<div class="reason">✕ ' + r + '</div>').join("") + '</div>').join("") : "") +
-    (declined.length ? '<h3 class="section-title">Declined</h3>' + declined.map((v) =>
-      '<div class="card cant"><div class="card-name">' + v.name + '</div>' +
-      '<div class="card-sub">' + v.city + '</div>' +
-      '<div class="reason">✕ ' + state.declines[v.id] + '</div></div>').join("") : "");
 }
 
-// ---------------- Vendor side: pick account, inbox, bid ----------------
+// ---------------- Vendor side: pick account, feed, bid ----------------
 function renderVendorPick() {
   $("vendorPick").innerHTML = VENDORS.map((v) =>
     '<button class="card' + (state.myVendor === v.id ? " selected" : "") + '" data-vendor="' + v.id + '">' +
@@ -348,7 +367,7 @@ function renderVendorPick() {
   }));
 }
 
-/* The inbox for the played vendor: the live customer RFQ (when posted) plus standing RFQs. */
+/* All open RFQs (the live customer one, when posted, plus standing ones). */
 function inboxRfqs() {
   const list = [];
   if (state.rfq) list.push({ id: "live", from: state.rfq.from, who: state.rfq.who, lines: state.rfq.lines,
@@ -358,25 +377,26 @@ function inboxRfqs() {
   return list;
 }
 
+/* The feed is self-filtered: an RFQ the vendor can't service never appears.
+   There is nothing to decline and nobody to explain a pass to. */
 function renderInbox() {
   const v = findVendor(state.myVendor);
   $("vinboxTitle").textContent = v.name;
-  const rfqs = inboxRfqs();
-  const can = rfqs.filter((r) => !cantReasons(v, r.lines, r.site, r.window).length).length;
-  $("vinboxSub").textContent = "You can service " + can + " of " + rfqs.length + " open RFQs. The rest never reach a bid — the reasons show on the card.";
-  $("vinboxList").innerHTML = rfqs.map((r) => {
-    const reasons = cantReasons(v, r.lines, r.site, r.window);
+  const feed = inboxRfqs().filter((r) => canService(v, r.lines, r.site, r.window));
+  $("vinboxSub").textContent = "Your feed — RFQs that fit your catalog, stock, coverage, and windows. Bid, or pass silently; the customer only ever sees bids.";
+  $("vinboxList").innerHTML = feed.length ? feed.map((r) => {
     const linesHtml = r.lines.map((l) => { const p = findProduct(l.sku); return l.cases + " × " + p.size + " MERV " + p.merv; }).join(" · ");
-    const status = r.live && state.declines[v.id] ? '<div class="reason">✕ You declined this one — ' + state.declines[v.id] + '</div>'
-      : r.live && state.bids.some((b) => b.vendorId === v.id && b.mine) ? '<div class="card-price">Your bid is in — tap to adjust it</div>'
+    const myBid = r.live ? state.bids.find((b) => b.vendorId === v.id) : null;
+    const status = myBid && myBid.mine ? '<div class="card-price">Your bid is in at ' + money(myBid.total) + ' — tap to adjust it</div>'
+      : myBid ? '<div class="card-price">A bid from your book is in at ' + money(myBid.total) + ' — tap to adjust it</div>'
       : state.sentBids[r.id] ? '<div class="card-price">Bid sent ✓</div>' : "";
-    return '<button class="card' + (reasons.length ? " cant" : "") + '" data-rfq="' + r.id + '"' + (reasons.length ? " disabled" : "") + '>' +
+    return '<button class="card" data-rfq="' + r.id + '">' +
       (r.live ? '<div class="bestbadge">Live — from the customer side</div>' : "") +
       '<div class="card-name">' + r.from + '</div>' +
-      '<div class="card-sub">' + r.who + ' · ' + r.site.name + ' · ' + r.window.name + '</div>' +
-      '<div class="card-sub">' + linesHtml + '</div>' + status +
-      reasons.map((x) => '<div class="reason">✕ ' + x + '</div>').join("") + '</button>';
-  }).join("");
+      '<div class="card-sub">' + r.who + ' · ' + r.site.name + ' · requires: ' + r.window.name + '</div>' +
+      '<div class="card-sub">' + linesHtml + '</div>' + status + '</button>';
+  }).join("") : '<div class="card cant"><div class="card-name">Nothing in your feed</div>' +
+    '<div class="card-sub">No open RFQ fits your catalog, stock, coverage, and windows right now.</div></div>';
   document.querySelectorAll("[data-rfq]").forEach((b) => b.addEventListener("click", () => {
     state.openRfq = inboxRfqs().find((r) => r.id === b.dataset.rfq);
     renderBidForm();
@@ -386,7 +406,7 @@ function renderInbox() {
 
 function renderBidForm() {
   const v = findVendor(state.myVendor), r = state.openRfq;
-  $("vbidHead").textContent = v.name + " bidding on " + r.from + " — " + r.site.name + ", " + r.window.name.toLowerCase() +
+  $("vbidHead").textContent = v.name + " bidding on " + r.from + " — " + r.site.name + ", requires " + r.window.name.toLowerCase() +
     ". Prices start from your book; change any of them.";
   const existing = r.live ? state.bids.find((b) => b.vendorId === v.id) : null;
   $("vbidLines").innerHTML = r.lines.map((l) => {
@@ -396,6 +416,7 @@ function renderBidForm() {
       '<span>$ <input class="priceinput" data-price="' + l.sku + '" type="number" min="0" step="0.01" value="' + start.toFixed(2) + '"></span></div>';
   }).join("");
   $("feeInput").value = (existing ? existing.fee : (v.fees[r.window.id] || 0)).toFixed(2);
+  $("promisePick").innerHTML = r.window.promises.map((p) => '<option' + ((existing && existing.promise === p) || (!existing && promiseFor(v, r.window) === p) ? " selected" : "") + '>' + p + '</option>').join("");
   document.querySelectorAll("[data-price]").forEach((inp) => inp.addEventListener("input", updateBidTotal));
   $("feeInput").addEventListener("input", updateBidTotal);
   updateBidTotal();
@@ -411,7 +432,7 @@ function readBidForm() {
     linesTotal += val * line.cases;
   });
   const fee = Math.max(0, parseFloat($("feeInput").value) || 0);
-  return { prices, fee, linesTotal, total: linesTotal + fee };
+  return { prices, fee, linesTotal, total: linesTotal + fee, promise: $("promisePick").value };
 }
 
 function updateBidTotal() { $("vbidTotal").textContent = money(readBidForm().total); }
@@ -419,12 +440,11 @@ function updateBidTotal() { $("vbidTotal").textContent = money(readBidForm().tot
 function submitBid() {
   const v = findVendor(state.myVendor), r = state.openRfq, f = readBidForm();
   if (r.live) {
-    const bid = { vendorId: v.id, prices: f.prices, fee: f.fee, linesTotal: f.linesTotal, total: f.total, mine: true };
+    const bid = { vendorId: v.id, prices: f.prices, fee: f.fee, linesTotal: f.linesTotal, total: f.total, promise: f.promise, mine: true };
     const ix = state.bids.findIndex((b) => b.vendorId === v.id);
     if (ix >= 0) state.bids[ix] = bid; else state.bids.push(bid);
-    delete state.declines[v.id];
     renderBids();
-    speak("Bid in. " + v.name + " at " + money(f.total) + ".");
+    speak("Bid in. " + v.name + " at " + money(f.total) + ", promising " + f.promise + ".");
     setSide(false); show("screen-bids");
   } else {
     state.sentBids[r.id] = true;
@@ -433,25 +453,15 @@ function submitBid() {
   }
 }
 
-function declineRfq() {
-  const v = findVendor(state.myVendor), r = state.openRfq;
-  if (r.live) {
-    state.declines[v.id] = $("declineReason").value;
-    state.bids = state.bids.filter((b) => b.vendorId !== v.id);
-    renderBids();
-  }
-  renderInbox();
-  show("screen-vinbox");
-}
-
-// ---------------- Review ----------------
+// ---------------- Bid details (breakdown + optional services live here) ----------------
 function reviewText() {
   const t = grandTotals(), v = state.vendor.vendor, prices = state.vendor.prices;
   const lines = state.cart.map((l) => { const it = findProduct(l.sku); return l.cases + " × " + it.size + " MERV " + it.merv + " — " + money(prices[l.sku] * l.cases); }).join("; ");
   return { lines, t,
-    spoken: "Your order with " + v.name + ": " + lines.replace(/×/g, "cases of") +
-      ". Delivered to " + state.site.name + ", " + state.window.eta +
-      ". Items " + money(t.sub) + ", delivery " + money(t.fee) + ", tax " + money(t.tax) +
+    spoken: "Bid from " + v.name + ": " + lines.replace(/×/g, "cases of") +
+      ". Delivered to " + state.site.name + ", promised " + state.vendor.promise +
+      ". Items " + money(t.sub) + ", delivery " + money(t.fee) +
+      (t.add ? ", optional services " + money(t.add) : "") + ", tax " + money(t.tax) +
       ". Estimated total " + money(t.total) + "." };
 }
 
@@ -462,11 +472,21 @@ function renderReview() {
     state.cart.map((l) => { const it = findProduct(l.sku);
       return '<div class="review-row"><span>' + l.cases + ' × ' + it.size + ' MERV ' + it.merv + '</span><span>' + money(prices[l.sku] * l.cases) + '</span></div>'; }).join("") +
     '<div class="review-row"><span>Deliver to</span><span>' + state.site.name + '</span></div>' +
-    '<div class="review-row"><span>Arrives</span><span>' + state.window.eta + '</span></div>' +
+    '<div class="review-row"><span>You required</span><span>' + state.window.name + '</span></div>' +
+    '<div class="review-row"><span>They promise</span><span>' + state.vendor.promise + '</span></div>' +
     (state.note ? '<div class="review-row"><span>Drop-off note</span><span>' + state.note + '</span></div>' : "") +
     '<div class="review-row"><span>Delivery</span><span>' + money(t.fee) + '</span></div>' +
+    (t.add ? '<div class="review-row"><span>Optional services</span><span>' + money(t.add) + '</span></div>' : "") +
     '<div class="review-row"><span>Tax (est.)</span><span>' + money(t.tax) + '</span></div>' +
     '<div class="review-row review-total"><span>Estimated total</span><span>' + money(t.total) + '</span></div>';
+  $("addonsArea").innerHTML = ADDONS.map((a) =>
+    '<label class="addon"><input type="checkbox" data-addon="' + a.id + '"' + (state.addons.includes(a.id) ? " checked" : "") + '>' +
+    '<span class="addon-name">' + a.name + '</span><span class="addon-price">' + (a.price ? "+" + money(a.price) : "Free") + '</span></label>').join("");
+  document.querySelectorAll("[data-addon]").forEach((cb) => cb.addEventListener("change", () => {
+    state.addons = Array.from(document.querySelectorAll("[data-addon]:checked")).map((x) => x.dataset.addon);
+    renderReview();
+  }));
+  $("detailsTotal").innerHTML = "";
 }
 
 // ---------------- Place order + text verification ----------------
@@ -475,10 +495,10 @@ function placeOrder() {
   if (t.total > TECH.limit) { speak("That is over your " + money(TECH.limit) + " order limit. Your dispatcher gets a request to approve it."); return; }
   const num = "FP-" + Math.floor(100000 + Math.random() * 900000);
   const code = String(Math.floor(100000 + Math.random() * 900000));
-  state.order = { number: num, code, total: t.total, eta: state.window.eta };
+  state.order = { number: num, code, total: t.total, eta: state.vendor.promise };
   state.entered = "";
   $("smsBody").textContent = "FilterPhone · " + v.name + ": Order " + num + " confirmed for " + state.site.name +
-    ". Arriving " + state.window.eta + ". Estimated total " + money(t.total) +
+    ". Promised window: " + state.vendor.promise + ". Estimated total " + money(t.total) +
     ". Your verification code is " + code + " — enter it in the app to lock your delivery slot.";
   renderDots();
   show("screen-verify");
@@ -500,13 +520,13 @@ function keyPress(k) {
     if (state.entered === state.order.code) {
       const v = state.vendor.vendor;
       $("doneLine").textContent = "Order " + state.order.number + " · " + v.name + " · " + money(state.order.total) +
-        " · arriving " + state.order.eta + " at " + state.site.name + ".";
+        " · promised " + state.order.eta + " at " + state.site.name + ".";
       $("timeline").innerHTML =
         '<div class="tl-row"><span>✓</span> Order placed with ' + v.name + ' and code verified</div>' +
         '<div class="tl-row"><span>✓</span> Picked and job-tagged at ' + v.name + '</div>' +
         '<div class="tl-row pending"><span>○</span> Out for delivery — live text updates on the way</div>' +
         '<div class="tl-row pending"><span>○</span> Delivered — photo confirmation to ' + state.site.contact + '</div>';
-      speak("Delivery locked in. Order " + state.order.number + " with " + v.name + ", arriving " + state.order.eta + ".");
+      speak("Delivery locked in. Order " + state.order.number + " with " + v.name + ", promised " + state.order.eta + ".");
       show("screen-done");
     } else {
       $("codeError").textContent = "That code doesn't match — check the text and try again.";
@@ -530,11 +550,10 @@ $("toSiteBtn").addEventListener("click", () => { renderSites(); show("screen-sit
 $("postRfqBtn").addEventListener("click", postRfq);
 $("toVendorBtn").addEventListener("click", () => { renderVendorPick(); setSide(true); });
 $("submitBidBtn").addEventListener("click", submitBid);
-$("declineBtn").addEventListener("click", declineRfq);
 $("toReviewSpeakBtn").addEventListener("click", () => speak(reviewText().spoken));
 $("placeBtn").addEventListener("click", placeOrder);
 $("againBtn").addEventListener("click", () => {
-  state.cart = []; state.vendor = null; state.order = null; state.rfq = null; state.bids = []; state.declines = {};
+  state.cart = []; state.vendor = null; state.addons = []; state.order = null; state.rfq = null; state.bids = [];
   renderCart(); show("screen-home");
 });
 document.querySelectorAll("[data-back]").forEach((b) => b.addEventListener("click", () => show(b.dataset.back)));

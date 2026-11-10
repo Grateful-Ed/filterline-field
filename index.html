@@ -13,16 +13,17 @@
     <p class="kicker">FilterPhone · Mock build</p>
     <h1>One request.<br>Every supplier bids.</h1>
     <p class="lede">FilterPhone is a real-time broker between the people who need filters and the
-    suppliers who sell them — both sides in a single build. The on-site customer speaks a request
-    for quote (an RFQ). Suppliers with a vendor account see the requests they can actually service
-    and bid. The customer picks a bid. Nobody bids on work they can't do: can't carry a line,
-    can't reach the site, can't make the window — the request never reaches them, and the customer
-    sees the reason instead of silence.</p>
+    suppliers who sell them — both sides in a single build, run as an <strong>open market</strong>,
+    the way the freight market works. The on-site customer posts a request for quote (an RFQ).
+    Suppliers see the RFQs that fit their own constraints — catalog, stock, coverage, windows —
+    and choose to bid or pass. The customer sees only bids: the vendor's name, the total, and the
+    delivery window that vendor is promising. Everyone else is silence, and that's correct —
+    a customer doesn't know, or care, why someone didn't bid.</p>
     <ol class="steps">
       <li><strong>The customer talks.</strong> Hands busy, so he speaks the RFQ: “Two cases of 20 by 25 by 1, MERV 8 — and one case of 16 by 20 by 4, MERV 13.” It transcribes and parses into lines.</li>
-      <li><strong>Point at the job.</strong> A saved job-site card and a delivery window, then the RFQ goes out.</li>
-      <li><strong>Vendors bid — the ones who can.</strong> Switch to the vendor side (top of the phone), pick a supplier, and bid on the live RFQ from your own price book, or decline with the reason attached. The other serviceable vendors' bids are simulated from their price books.</li>
-      <li><strong>Pick a bid, lock it by text.</strong> Bids rank by total price. The winner confirms by text with the ETA, the total, and a 6-digit code; the code goes in on a glove-sized keypad and the delivery is locked.</li>
+      <li><strong>Post it to the market.</strong> A saved job-site card and the delivery window he requires, then the RFQ goes out open.</li>
+      <li><strong>Vendors bid — or don't.</strong> Switch to the vendor side (top of the phone), pick a supplier, and bid on the live RFQ from your own price book, promising a delivery window inside the customer's range — or pass, silently. No reason is sent; the customer never knows you saw it. The other vendors' bids are simulated from their price books.</li>
+      <li><strong>Pick on total and window.</strong> Bid cards carry three things: name, total, promised window. Cost has the most influence, but a tighter window can win the order. Tap a bid for its details — the charge breakdown and optional services live there, not on the card — then lock the winner by text code.</li>
     </ol>
     <p class="fineprint">Demo data only. Every person, company, site, price, and stock count on
     this page is invented, vendor bids are simulated from that data except any bid you place
@@ -73,7 +74,7 @@
         <button class="back" data-back="screen-home">← Request</button>
         <h2 class="prompt">Where's it going?</h2>
         <div id="siteCards"></div>
-        <h3 class="section-title">When?</h3>
+        <h3 class="section-title">When? — the window you require</h3>
         <div id="windowCards"></div>
         <h3 class="section-title">Drop-off note</h3>
         <button class="notebtn" id="noteBtn">🎙 <span id="noteLabel">Tap to speak a note</span></button>
@@ -87,16 +88,19 @@
         <h2 class="prompt">Bids on your RFQ</h2>
         <p class="heard" id="bidsSummary"></p>
         <div id="bidsList"></div>
-        <div id="cantList"></div>
         <button class="notebtn" id="toVendorBtn">Bid on it yourself — vendor side →</button>
       </div>
 
-      <!-- Screen: Review -->
+      <!-- Screen: Bid details (stands in for both details and order review in the mock) -->
       <div class="screen" id="screen-review">
         <button class="back" data-back="screen-bids">← Bids</button>
-        <h2 class="prompt">Sound right?</h2>
+        <h2 class="prompt">Bid details</h2>
+        <p class="heard">The breakdown lives here, not on the bid card. In the full build this details view sits separate from order review; the mock uses this one page for both.</p>
         <button class="notebtn" id="toReviewSpeakBtn">🔊 Read it back to me</button>
         <div id="reviewBody"></div>
+        <h3 class="section-title">Optional services</h3>
+        <div id="addonsArea"></div>
+        <div id="detailsTotal"></div>
         <button class="cta" id="placeBtn">Place the order</button>
         <p class="fineprint center">Placing sends a text to Dale's phone from the vendor, with the ETA, the total, and a verification code.</p>
       </div>
@@ -126,35 +130,31 @@
       <!-- Screen: Vendor home / pick your account -->
       <div class="screen" id="screen-vhome">
         <h2 class="prompt">Who are you bidding as?</h2>
-        <p class="heard">Vendor accounts on the network. Pick one — its inbox shows the RFQs it can service, priced from its own book.</p>
+        <p class="heard">Vendor accounts on the network. Pick one — its feed shows only the RFQs that fit its own constraints.</p>
         <div id="vendorPick"></div>
       </div>
 
-      <!-- Screen: Vendor inbox -->
+      <!-- Screen: Vendor feed -->
       <div class="screen" id="screen-vinbox">
         <button class="back" data-back="screen-vhome">← Vendors</button>
-        <h2 class="prompt" id="vinboxTitle">RFQ inbox</h2>
+        <h2 class="prompt" id="vinboxTitle">RFQ feed</h2>
         <p class="heard" id="vinboxSub"></p>
         <div id="vinboxList"></div>
       </div>
 
       <!-- Screen: Vendor bid -->
       <div class="screen" id="screen-vbid">
-        <button class="back" data-back="screen-vinbox">← Inbox</button>
+        <button class="back" data-back="screen-vinbox">← Feed</button>
         <h2 class="prompt">Your bid</h2>
         <p class="heard" id="vbidHead"></p>
         <div id="vbidLines"></div>
         <div class="review-row"><span>Delivery fee</span><span>$ <input class="priceinput" id="feeInput" type="number" min="0" step="0.01"></span></div>
+        <h3 class="section-title">Promised delivery window</h3>
+        <select class="promisepick" id="promisePick"></select>
+        <p class="heard">Inside the customer's required range — a tighter promise can win the order over a cheaper bid.</p>
         <div class="review-row review-total"><span>Your bid total</span><span id="vbidTotal"></span></div>
         <button class="cta" id="submitBidBtn">Submit bid</button>
-        <h3 class="section-title">Can't take it?</h3>
-        <select class="declinepick" id="declineReason">
-          <option>Price — can't make the numbers work</option>
-          <option>Capacity — booked out in that window</option>
-          <option>Stock — on hand is spoken for by a standing order</option>
-          <option>Other — can't service this one</option>
-        </select>
-        <button class="notebtn" id="declineBtn">Decline with this reason</button>
+        <p class="fineprint center">Or just go back — passing is silent. The customer never sees a pass, and no reason is sent.</p>
       </div>
 
     </div>
